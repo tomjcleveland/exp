@@ -6,6 +6,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"flag"
 	"fmt"
 	"go/scanner"
@@ -18,8 +19,15 @@ import (
 	"golang.org/x/exp/ebnf"
 )
 
+// MaxInt values for finding minimum
+const (
+	MaxUint = ^uint(0)
+	MaxInt  = int(MaxUint >> 1)
+)
+
 var fset = token.NewFileSet()
 var start = flag.String("start", "Start", "name of start production")
+var outfile = flag.String("out", "", "name out output EBNF file")
 
 func usage() {
 	fmt.Fprintf(os.Stderr, "usage: go tool ebnflint [flags] [filename]\n")
@@ -65,7 +73,17 @@ func extractEBNF(src []byte) []byte {
 		j += i
 
 		// copy EBNF text
-		buf.Write(src[i:j])
+		for k := i; k <= j; k++ {
+			// If we encounter an opening html tag,
+			// consume the tag before writing to buffer
+			if src[k] == '<' {
+				for src[k] != '>' {
+					k++
+				}
+			} else {
+				buf.Write([]byte{src[k]})
+			}
+		}
 
 		// advance
 		src = src[j:]
@@ -90,12 +108,12 @@ func main() {
 		usage()
 	}
 
-	if err := verify(name, *start, r); err != nil {
+	if err := verify(name, *start, r, *outfile); err != nil {
 		report(err)
 	}
 }
 
-func verify(name, start string, r io.Reader) error {
+func verify(name, start string, r io.Reader, outFile string) error {
 	if r == nil {
 		f, err := os.Open(name)
 		if err != nil {
@@ -114,10 +132,54 @@ func verify(name, start string, r io.Reader) error {
 		src = extractEBNF(src)
 	}
 
+	// Write EBNF to file
+	if outFile != "" {
+		err = writeEBNF(src, outFile)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("generated EBNF file %q\n", outFile)
+	}
+
 	grammar, err := ebnf.Parse(name, bytes.NewBuffer(src))
 	if err != nil {
 		return err
 	}
 
-	return ebnf.Verify(grammar, start)
+	if start == "Start" {
+		// Find the start Production by trying everything
+		prodErrMap := make(map[string]int)
+		for prod := range grammar {
+			count, _ := ebnf.Verify(grammar, prod)
+			prodErrMap[prod] = count
+		}
+		min := MaxInt
+		var startProd string
+		for prod, count := range prodErrMap {
+			if count < min {
+				min = count
+				startProd = prod
+			}
+		}
+		if startProd == "" {
+			return errors.New("failed to find start production")
+		}
+		start = startProd
+	}
+
+	fmt.Printf("using start production %q\n", start)
+	_, err = ebnf.Verify(grammar, start)
+	return err
+}
+
+func writeEBNF(src []byte, path string) error {
+	for {
+		new := bytes.Replace(src, []byte("\n\n"), []byte("\n"), -1)
+		if len(new) < len(src) {
+			src = new
+		} else {
+			break
+		}
+	}
+	return ioutil.WriteFile(path, src, 0777)
 }

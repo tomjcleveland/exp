@@ -262,8 +262,8 @@ func (v *verifier) verify(grammar Grammar, start string) {
 //
 // Position information is interpreted relative to the file set fset.
 //
-func Verify(grammar Grammar, start string) error {
+func Verify(grammar Grammar, start string) (int, error) {
 	var v verifier
 	v.verify(grammar, start)
-	return v.errors.Err()
+	return len(v.errors), v.errors.Err()
 }
